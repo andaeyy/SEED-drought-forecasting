@@ -1,4 +1,4 @@
-# ADAPT Drought Forecasting Streamlit App
+# SEED Drought Forecasting Streamlit App
 
 > [!IMPORTANT]
 > **GPU-only application:** this app will not run on CPU. Start it from a shell that already has access to a CUDA GPU.
