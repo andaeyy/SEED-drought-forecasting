@@ -21,8 +21,7 @@ fi
 export STREAMLIT_SERVER_HEADLESS=true
 export STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
-# TensorFlow/GPU runtime config. DROUGHTAPP_GPU_DEVICE wins; otherwise keep the
-# scheduler/runtime CUDA_VISIBLE_DEVICES value; otherwise default to GPU 0.
+# gpu selection: DROUGHTAPP_GPU_DEVICE, CUDA_VISIBLE_DEVICES, then 0
 if [[ -n "${DROUGHTAPP_GPU_DEVICE:-}" ]]; then
   export CUDA_VISIBLE_DEVICES="${DROUGHTAPP_GPU_DEVICE%%,*}"
 elif [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then

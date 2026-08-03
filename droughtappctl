@@ -1,0 +1,441 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BACKEND_DIR="${APP_ROOT}/backend"
+FRONTEND_DIR="${APP_ROOT}/frontend"
+LOG_DIR="${BACKEND_DIR}/logs"
+STATE_DIR="${APP_ROOT}/.droughtappctl"
+LAST_JOB_FILE="${STATE_DIR}/latest_backend_job"
+
+BACKEND_PORT="${BACKEND_PORT:-18000}"
+LOCAL_BACKEND_PORT="${LOCAL_BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+NPM_BIN="${NPM_BIN:-npm}"
+SSH_TARGET="${DROUGHTAPP_SSH_TARGET:-drought-login}"
+
+usage() {
+  cat <<'USAGE'
+droughtappctl: setup, run, tunnel, and test the drought web app.
+
+Usage:
+  ./droughtappctl setup
+      Install backend/frontend dependencies and create local env files.
+
+  ./droughtappctl earthdata-login
+      Run one-time NASA Earthdata login in the backend environment.
+
+  ./droughtappctl backend
+      Submit the FastAPI backend as a Slurm GPU job, wait for node/port,
+      test it from the cluster, and print the SSH tunnel command.
+
+  ./droughtappctl frontend
+      Run the Next.js frontend on the cluster login node.
+
+  ./droughtappctl dev
+      Submit/test backend, print the SSH tunnel command, then start frontend.
+
+  ./droughtappctl test [URL]
+      Test a tunneled/local API. Default: http://localhost:8000
+
+  ./droughtappctl test-job [JOBID]
+      Test the backend directly from the cluster using the Slurm job log.
+
+  ./droughtappctl tunnel [JOBID] [--frontend]
+      Print the laptop-side SSH tunnel command for the backend. Add
+      --frontend when the Next.js server is running on the login node too.
+
+  ./droughtappctl status [JOBID]
+      Show Slurm status for the backend job.
+
+  ./droughtappctl logs [JOBID]
+      Follow backend stdout/stderr logs.
+
+  ./droughtappctl validate-gpu
+      Submit the model/GPU validation batch script.
+
+Environment:
+  BACKEND_PORT=18000              Remote FastAPI port inside the Slurm job.
+  LOCAL_BACKEND_PORT=8000         Laptop/local port for the SSH tunnel.
+  FRONTEND_PORT=3000              Next.js port.
+  DROUGHTAPP_SSH_TARGET=alias     SSH alias/target used only in printed tunnel commands.
+  PYTHON_BIN=python3              Python used to create backend/.venv.
+  NPM_BIN=npm                     npm executable.
+
+Do not put passwords in this file, .env files, or command-line arguments.
+Use an SSH key or type the SSH password interactively when SSH prompts.
+USAGE
+}
+
+log() {
+  printf '[droughtappctl] %s\n' "$*"
+}
+
+warn() {
+  printf '[droughtappctl] warning: %s\n' "$*" >&2
+}
+
+die() {
+  printf '[droughtappctl] error: %s\n' "$*" >&2
+  exit 1
+}
+
+ensure_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+ensure_npm_runtime() {
+  if [[ "$NPM_BIN" == */* ]]; then
+    local npm_dir
+    npm_dir="$(cd "$(dirname "$NPM_BIN")" && pwd)"
+    if [[ -x "${npm_dir}/node" ]]; then
+      export PATH="${npm_dir}:${PATH}"
+    fi
+  fi
+
+  ensure_cmd "$NPM_BIN"
+  ensure_cmd node
+}
+
+copy_if_missing() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ -f "$dst" ]]; then
+    log "kept existing ${dst#$APP_ROOT/}"
+    return
+  fi
+  cp "$src" "$dst"
+  log "created ${dst#$APP_ROOT/}"
+}
+
+ensure_state_dir() {
+  mkdir -p "$STATE_DIR" "$LOG_DIR"
+}
+
+setup_backend() {
+  ensure_cmd "$PYTHON_BIN"
+  ensure_state_dir
+
+  cd "$BACKEND_DIR"
+  if [[ ! -d .venv ]]; then
+    log "creating backend virtualenv"
+    "$PYTHON_BIN" -m venv .venv --system-site-packages
+  else
+    log "using existing backend/.venv"
+  fi
+
+  # shellcheck source=/dev/null
+  source .venv/bin/activate
+  python -m pip install --upgrade pip
+  python -m pip install -r requirements.txt
+  copy_if_missing "${BACKEND_DIR}/.env.example" "${BACKEND_DIR}/.env"
+
+  python - <<'PY' || warn "Python import check failed; check backend dependencies before running forecasts."
+import fastapi
+import uvicorn
+import numpy
+print("backend_import_check=ok")
+PY
+}
+
+setup_frontend() {
+  ensure_npm_runtime
+
+  cd "$FRONTEND_DIR"
+  "$NPM_BIN" install
+  copy_if_missing "${FRONTEND_DIR}/.env.local.example" "${FRONTEND_DIR}/.env.local"
+}
+
+cmd_setup() {
+  setup_backend
+  setup_frontend
+  log "setup complete"
+  log "run './droughtappctl earthdata-login' once if this account has not authenticated with NASA Earthdata yet"
+}
+
+cmd_earthdata_login() {
+  [[ -d "${BACKEND_DIR}/.venv" ]] || die "backend/.venv is missing; run './droughtappctl setup' first"
+  cd "$BACKEND_DIR"
+  # shellcheck source=/dev/null
+  source .venv/bin/activate
+  python -c "import earthaccess; earthaccess.login(persist=True)"
+}
+
+backend_log_path() {
+  local jobid="$1"
+  printf '%s/gpu_backend_%s.out' "$LOG_DIR" "$jobid"
+}
+
+backend_err_path() {
+  local jobid="$1"
+  printf '%s/gpu_backend_%s.err' "$LOG_DIR" "$jobid"
+}
+
+latest_backend_job() {
+  if [[ -f "$LAST_JOB_FILE" ]]; then
+    tr -d '[:space:]' < "$LAST_JOB_FILE"
+    return
+  fi
+
+  find "$LOG_DIR" -maxdepth 1 -type f -name 'gpu_backend_*.out' -printf '%T@ %f\n' 2>/dev/null \
+    | sort -nr \
+    | awk 'NR == 1 { gsub(/^gpu_backend_|\.out$/, "", $2); print $2 }'
+}
+
+backend_node_port() {
+  local jobid="$1"
+  local out
+  local node
+  local port
+
+  out="$(backend_log_path "$jobid")"
+  [[ -f "$out" ]] || die "backend log not found for job ${jobid}: $out"
+
+  node="$(awk -F= '/^drought_backend_node=/ { print $2; exit }' "$out")"
+  port="$(awk -F= '/^drought_backend_port=/ { print $2; exit }' "$out")"
+
+  [[ -n "$node" ]] || die "backend node is not available yet in $out"
+  [[ -n "$port" ]] || die "backend port is not available yet in $out"
+  printf '%s %s\n' "$node" "$port"
+}
+
+wait_for_backend() {
+  local jobid="$1"
+  local timeout_seconds="${2:-300}"
+  local started
+  local out
+  local err
+
+  started="$(date +%s)"
+  out="$(backend_log_path "$jobid")"
+  err="$(backend_err_path "$jobid")"
+
+  log "waiting for backend job ${jobid} to report node/port"
+  while true; do
+    if [[ -f "$out" ]] \
+      && grep -q '^drought_backend_node=' "$out" \
+      && grep -q '^drought_backend_port=' "$out"; then
+      return 0
+    fi
+
+    if [[ -f "$err" ]] && grep -qiE 'Traceback|error while attempting to bind|failed|exception' "$err"; then
+      warn "backend stderr already contains an error; see $err"
+      return 1
+    fi
+
+    if (( "$(date +%s)" - started >= timeout_seconds )); then
+      warn "timed out waiting for backend metadata; check Slurm status/logs"
+      return 1
+    fi
+
+    sleep 3
+  done
+}
+
+print_backend_info() {
+  local jobid="$1"
+  local node
+  local port
+
+  read -r node port < <(backend_node_port "$jobid")
+  log "backend job: $jobid"
+  log "backend node: $node"
+  log "backend remote port: $port"
+}
+
+cmd_backend() {
+  ensure_cmd sbatch
+  ensure_state_dir
+
+  cd "$APP_ROOT"
+  local jobid
+  jobid="$(sbatch --parsable --export=ALL,BACKEND_PORT="$BACKEND_PORT" backend/run_gpu_backend.sbatch)"
+  printf '%s\n' "$jobid" > "$LAST_JOB_FILE"
+
+  log "submitted backend job $jobid"
+  if wait_for_backend "$jobid"; then
+    print_backend_info "$jobid"
+    cmd_test_job "$jobid" || warn "backend direct test failed"
+    cmd_tunnel "$jobid" --frontend
+  else
+    warn "backend is not ready yet"
+    log "check status: ./droughtappctl status $jobid"
+    log "check logs:   ./droughtappctl logs $jobid"
+  fi
+}
+
+cmd_frontend() {
+  ensure_npm_runtime
+  cd "$FRONTEND_DIR"
+  copy_if_missing "${FRONTEND_DIR}/.env.local.example" "${FRONTEND_DIR}/.env.local"
+  log "starting frontend on ${FRONTEND_HOST}:${FRONTEND_PORT}"
+  exec "$NPM_BIN" run dev -- --hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT"
+}
+
+cmd_dev() {
+  cmd_backend
+  log "starting frontend; keep the SSH tunnel open from your laptop"
+  cmd_frontend
+}
+
+cmd_test() {
+  ensure_cmd curl
+  local base_url="${1:-${DROUGHTAPP_API_URL:-http://localhost:${LOCAL_BACKEND_PORT}}}"
+  base_url="${base_url%/}"
+
+  log "testing ${base_url}"
+  curl -fsS "${base_url}/api/health"
+  printf '\n'
+  curl -fsS "${base_url}/api/timescales"
+  printf '\n'
+}
+
+cmd_test_job() {
+  ensure_cmd curl
+  local jobid="${1:-${DROUGHTAPP_BACKEND_JOB:-$(latest_backend_job)}}"
+  [[ -n "$jobid" ]] || die "no backend job id found; pass JOBID or run './droughtappctl backend'"
+
+  local node
+  local port
+  read -r node port < <(backend_node_port "$jobid")
+  cmd_test "http://${node}:${port}"
+}
+
+cmd_tunnel() {
+  local jobid=""
+  local include_frontend=0
+  local node="${DROUGHTAPP_BACKEND_NODE:-}"
+  local remote_port="${DROUGHTAPP_REMOTE_BACKEND_PORT:-}"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --frontend)
+        include_frontend=1
+        shift
+        ;;
+      --node)
+        node="${2:-}"
+        [[ -n "$node" ]] || die "--node requires a value"
+        shift 2
+        ;;
+      --remote-port)
+        remote_port="${2:-}"
+        [[ -n "$remote_port" ]] || die "--remote-port requires a value"
+        shift 2
+        ;;
+      --ssh-target)
+        SSH_TARGET="${2:-}"
+        [[ -n "$SSH_TARGET" ]] || die "--ssh-target requires a value"
+        shift 2
+        ;;
+      --local-backend-port)
+        LOCAL_BACKEND_PORT="${2:-}"
+        [[ -n "$LOCAL_BACKEND_PORT" ]] || die "--local-backend-port requires a value"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        if [[ -z "$jobid" ]]; then
+          jobid="$1"
+          shift
+        else
+          die "unexpected tunnel argument: $1"
+        fi
+        ;;
+    esac
+  done
+
+  if [[ -z "$node" || -z "$remote_port" ]]; then
+    jobid="${jobid:-${DROUGHTAPP_BACKEND_JOB:-$(latest_backend_job)}}"
+    [[ -n "$jobid" ]] || die "no backend job id found; pass JOBID or use --node/--remote-port"
+    read -r node remote_port < <(backend_node_port "$jobid")
+  fi
+
+  printf '\nRun this on your laptop and keep it open:\n\n'
+  if (( include_frontend )); then
+    printf 'ssh -N -L %s:%s:%s -L %s:localhost:%s %s\n\n' \
+      "$LOCAL_BACKEND_PORT" "$node" "$remote_port" "$FRONTEND_PORT" "$FRONTEND_PORT" "$SSH_TARGET"
+  else
+    printf 'ssh -N -L %s:%s:%s %s\n\n' \
+      "$LOCAL_BACKEND_PORT" "$node" "$remote_port" "$SSH_TARGET"
+  fi
+  printf 'Then open http://localhost:%s and test http://localhost:%s/api/health\n\n' \
+    "$FRONTEND_PORT" "$LOCAL_BACKEND_PORT"
+}
+
+cmd_status() {
+  ensure_cmd squeue
+  local jobid="${1:-${DROUGHTAPP_BACKEND_JOB:-$(latest_backend_job)}}"
+  [[ -n "$jobid" ]] || die "no backend job id found"
+  squeue -j "$jobid" -o "%.18i %.9P %.20j %.8T %.10M %.9l %.6D %R"
+}
+
+cmd_logs() {
+  local jobid="${1:-${DROUGHTAPP_BACKEND_JOB:-$(latest_backend_job)}}"
+  [[ -n "$jobid" ]] || die "no backend job id found"
+  tail -f "$(backend_log_path "$jobid")" "$(backend_err_path "$jobid")"
+}
+
+cmd_validate_gpu() {
+  ensure_cmd sbatch
+  cd "$APP_ROOT"
+  sbatch backend/gpu_validate_models.sbatch
+}
+
+main() {
+  local command="${1:-help}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+
+  case "$command" in
+    setup)
+      cmd_setup "$@"
+      ;;
+    earthdata-login)
+      cmd_earthdata_login "$@"
+      ;;
+    backend)
+      cmd_backend "$@"
+      ;;
+    frontend)
+      cmd_frontend "$@"
+      ;;
+    dev)
+      cmd_dev "$@"
+      ;;
+    test)
+      cmd_test "$@"
+      ;;
+    test-job)
+      cmd_test_job "$@"
+      ;;
+    tunnel)
+      cmd_tunnel "$@"
+      ;;
+    status)
+      cmd_status "$@"
+      ;;
+    logs)
+      cmd_logs "$@"
+      ;;
+    validate-gpu)
+      cmd_validate_gpu "$@"
+      ;;
+    help|--help|-h)
+      usage
+      ;;
+    *)
+      usage >&2
+      die "unknown command: $command"
+      ;;
+  esac
+}
+
+main "$@"
