@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from config import GPU_DEVICE_ID  # noqa: F401 - applies CUDA_VISIBLE_DEVICES before TensorFlow import
+from config import GPU_DEVICE_ID  # noqa: F401 - configures CUDA before TensorFlow import
 import tensorflow as tf
 
 
 @tf.keras.utils.register_keras_serializable(package="Custom", name="TakeLastTimestep")
 class TakeLastTimestep(tf.keras.layers.Layer):
-    """Return  last timestep from 5D sequence tensor [B, T, H, W, C]."""
+    """selects the final timestep from [batch, time, height, width, channels]"""
 
     def call(self, inputs: tf.Tensor) -> tf.Tensor:
         return inputs[:, -1, ...]

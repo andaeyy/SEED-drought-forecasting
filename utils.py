@@ -6,7 +6,7 @@ import numpy as np
 
 def enable_tf_gpu_memory_growth():
     try:
-        from config import GPU_DEVICE_ID  # noqa: F401 - applies CUDA_VISIBLE_DEVICES before TensorFlow import
+        from config import GPU_DEVICE_ID  # noqa: F401 - configures CUDA before TensorFlow import
         import tensorflow as tf
 
         for g in tf.config.list_physical_devices("GPU"):
@@ -16,10 +16,9 @@ def enable_tf_gpu_memory_growth():
 
 
 def _erf(x: np.ndarray) -> np.ndarray:
-    """Vectorized erf with SciPy fast path."""
     x = np.asarray(x, dtype=np.float32)
     try:
-        from scipy.special import erf as sp_erf 
+        from scipy.special import erf as sp_erf
 
         return sp_erf(x).astype(np.float32)
     except Exception:

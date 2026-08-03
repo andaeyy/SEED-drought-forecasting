@@ -38,7 +38,6 @@ def plot_field(
     *,
     pad_deg: float = 2.0,
 ):
-    """Map-style plot with plain Matplotlib fallback."""
     field = np.asarray(field, dtype=np.float32)
     lat2d = np.asarray(lat2d, dtype=np.float32)
     lonp = _norm_lon_180(lon2d)
@@ -78,14 +77,13 @@ def plot_category(
     *,
     pad_deg: float = 2.0,
 ):
-    """Category map from 0 to 5(None, D0..D4)."""
     cat = np.asarray(cat, dtype=np.float32)
     lat2d = np.asarray(lat2d, dtype=np.float32)
     lonp = _norm_lon_180(lon2d)
 
     ccrs, cfeature = _try_cartopy()
 
-    cmap = ListedColormap([(0.0, 0.0, 0.0, 0.0), "#FFFF00", "#FCD37F", "#FFAA00", "#E60000", "#730000"])
+    cmap = ListedColormap(["#FFFFFF", "#FFFF00", "#FCD37F", "#FFAA00", "#E60000", "#730000"])
     norm = BoundaryNorm(np.arange(-0.5, 6.5, 1.0), cmap.N)
 
     if ccrs is None:

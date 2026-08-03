@@ -27,7 +27,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from config import DEFAULT_COPULA_TAU, ELM_ET_PATH, ELM_SM_PATH  # noqa: E402
-from drought_index import drought_from_zscores  # noqa: E402
+from drought_index import clayton_lower_tail_joint, drought_from_zscores, to_usdm_category, z_to_u  # noqa: E402
 
 
 USDM_GEOJSON_BASE = "https://droughtmonitor.unl.edu/data/json/"
@@ -119,7 +119,7 @@ def _load_target_and_climatology(
         z_et=z_et,
         z_sm=z_sm,
         tau=DEFAULT_COPULA_TAU,
-        sensitivity=2.0,
+        sensitivity=1.0,
     )
 
     return {
@@ -173,7 +173,7 @@ def _target_index_from_arrays(
         z_et=z_et,
         z_sm=z_sm,
         tau=DEFAULT_COPULA_TAU,
-        sensitivity=2.0,
+        sensitivity=1.0,
     )
 
     return {
@@ -364,6 +364,32 @@ def _category_fractions(cat: np.ndarray) -> dict[str, float]:
     return {USDM_LABELS[i]: 100.0 * float(np.sum(values == i)) / float(total) for i in range(6)}
 
 
+def _percent_agreement(a: np.ndarray, b: np.ndarray) -> float:
+    a_arr = np.asarray(a)
+    b_arr = np.asarray(b)
+    valid = np.isfinite(a_arr) & np.isfinite(b_arr)
+    if not np.any(valid):
+        return float("nan")
+    return 100.0 * float(np.mean(a_arr[valid] == b_arr[valid]))
+
+
+def _copula_category_from_zscores(
+    z_et: np.ndarray,
+    z_sm: np.ndarray,
+    *,
+    tau: float = DEFAULT_COPULA_TAU,
+) -> tuple[np.ndarray, np.ndarray]:
+    valid = np.isfinite(z_et) & np.isfinite(z_sm)
+    pdry = np.full(np.asarray(z_et).shape, np.nan, dtype=np.float32)
+    if np.any(valid):
+        pdry[valid] = clayton_lower_tail_joint(
+            z_to_u(np.asarray(z_et)[valid]),
+            z_to_u(np.asarray(z_sm)[valid]),
+            tau=tau,
+        )
+    return pdry, to_usdm_category(pdry, sensitivity=1.0)
+
+
 def _plot_joint_pdf_from_z(
     z_et: np.ndarray,
     z_sm: np.ndarray,
@@ -389,7 +415,7 @@ def _plot_joint_pdf_from_z(
     xgrid = np.linspace(-3.5, 3.5, 220)
     ygrid = np.linspace(-3.5, 3.5, 220)
     xx, yy = np.meshgrid(xgrid, ygrid)
-    pdry_grid, _ = drought_from_zscores(xx, yy, tau=DEFAULT_COPULA_TAU, sensitivity=2.0)
+    pdry_grid, _ = drought_from_zscores(xx, yy, tau=DEFAULT_COPULA_TAU, sensitivity=1.0)
 
     plt.rcParams.update(
         {
@@ -439,7 +465,6 @@ def _plot_joint_pdf_from_z(
     ax.axhline(0.0, color="0.35", linewidth=0.8, linestyle=":")
     ax.set_xlabel("Evapotranspiration standardized anomaly")
     ax.set_ylabel("Soil moisture standardized anomaly")
-    ax.set_title(f"ET-SM joint probability density ({label})")
     ax.set_xlim(-3.5, 3.5)
     ax.set_ylim(-3.5, 3.5)
     ax.set_aspect("equal", adjustable="box")
@@ -468,19 +493,20 @@ def _plot_comparison(
     *,
     lat: np.ndarray,
     lon: np.ndarray,
-    app_cat: np.ndarray,
+    product_cat: np.ndarray,
+    product_label: str,
     usdm_cat: np.ndarray,
     target_date: str,
     output_dir: Path,
+    output_name: str,
 ) -> Path:
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
 
     lon2d, lat2d = np.meshgrid(lon, lat)
     extent = [float(np.nanmin(lon)), float(np.nanmax(lon)), float(np.nanmin(lat)), float(np.nanmax(lat))]
-    app_frac = _category_fractions(app_cat)
+    product_frac = _category_fractions(product_cat)
     usdm_frac = _category_fractions(usdm_cat)
-    agreement = 100.0 * float(np.mean(app_cat == usdm_cat))
 
     fig = plt.figure(figsize=(9.53, 7.30), dpi=300)
     gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 0.24], hspace=0.18, wspace=0.06)
@@ -488,11 +514,7 @@ def _plot_comparison(
         fig.add_subplot(gs[0, 0], projection=ccrs.PlateCarree()),
         fig.add_subplot(gs[0, 1], projection=ccrs.PlateCarree()),
     ]
-    titles = [
-        "Clayton ET-SM drought index",
-        "Official U.S. Drought Monitor",
-    ]
-    for ax, field, title in zip(axes, [app_cat, usdm_cat], titles):
+    for ax, field in zip(axes, [product_cat, usdm_cat]):
         ax.set_extent(extent, crs=ccrs.PlateCarree())
         ax.pcolormesh(lon2d, lat2d, field, cmap=USDM_CMAP, norm=USDM_NORM, shading="auto", transform=ccrs.PlateCarree())
         ax.add_feature(cfeature.STATES.with_scale("50m"), linewidth=0.35, edgecolor="0.25")
@@ -504,7 +526,6 @@ def _plot_comparison(
         gl.bottom_labels = False
         gl.xlabel_style = {"size": 7}
         gl.ylabel_style = {"size": 7}
-        ax.set_title(title, pad=6)
 
     cax = fig.add_axes([0.91, 0.38, 0.018, 0.42])
     cb = fig.colorbar(
@@ -521,7 +542,7 @@ def _plot_comparison(
     ax_tbl.axis("off")
     labels = USDM_LABELS
     rows = [
-        ["Clayton ET-SM"] + [f"{app_frac[label]:.1f}" for label in labels],
+        [product_label] + [f"{product_frac[label]:.1f}" for label in labels],
         ["USDM"] + [f"{usdm_frac[label]:.1f}" for label in labels],
     ]
     table = ax_tbl.table(
@@ -539,13 +560,7 @@ def _plot_comparison(
             cell.set_facecolor("#f2f2f2")
             cell.set_text_props(weight="bold")
 
-    fig.suptitle(
-        f"Drought category comparison over identical ELM grid extent ({target_date}); cell agreement = {agreement:.1f}%",
-        y=0.965,
-        fontsize=11,
-    )
-
-    out = output_dir / f"drought_index_usdm_comparison_{target_date}.png"
+    out = output_dir / output_name
     fig.savefig(out)
     plt.close(fig)
     return out
@@ -557,6 +572,9 @@ def _plot_horizon_case_comparison(
     usdm_by_date: dict[np.datetime64, np.ndarray],
     case_labels: dict[str, str],
     output_dir: Path,
+    product_label: str,
+    output_name: str,
+    category_method: str,
 ) -> Path:
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
@@ -568,27 +586,35 @@ def _plot_horizon_case_comparison(
     extent = [float(np.nanmin(lon)), float(np.nanmax(lon)), float(np.nanmin(lat)), float(np.nanmax(lat))]
 
     dates = {label: np.datetime64(date, "D") for label, date in case_labels.items()}
-    fig = plt.figure(figsize=(15.0, 11.0), dpi=300)
+    fig = plt.figure(figsize=(15.0, 10.8), dpi=300)
     gs = fig.add_gridspec(
         len(dates),
         len(HORIZONS) * 2,
         left=0.055,
         right=0.93,
         bottom=0.08,
-        top=0.90,
+        top=0.88,
         wspace=0.035,
-        hspace=0.12,
+        hspace=0.16,
     )
 
     axes = []
+    pair_annotations = []
     for row_idx, (case_label, target_date) in enumerate(dates.items()):
         row_axes = []
         for horizon_idx, horizon_name in enumerate(HORIZONS):
-            app_cat = cases[(horizon_name, target_date)]["category"]
+            case = cases[(horizon_name, target_date)]
+            if category_method == "copula":
+                _, app_cat = _copula_category_from_zscores(case["z_et"], case["z_sm"])
+            elif category_method == "msdi_kendall":
+                app_cat = case["category"]
+            else:
+                raise ValueError(f"Unknown category_method: {category_method}")
             usdm_cat = usdm_by_date[target_date]
-            agreement = 100.0 * float(np.mean(app_cat == usdm_cat))
-            for product_idx, (product_label, field) in enumerate(
-                [("Index", app_cat), ("USDM", usdm_cat)]
+            agreement = _percent_agreement(app_cat, usdm_cat)
+            pair_axes = []
+            for product_idx, (panel_label, field) in enumerate(
+                [(product_label, app_cat), ("USDM", usdm_cat)]
             ):
                 col_idx = horizon_idx * 2 + product_idx
                 ax = fig.add_subplot(gs[row_idx, col_idx], projection=ccrs.PlateCarree())
@@ -610,14 +636,9 @@ def _plot_horizon_case_comparison(
                 for spine in ax.spines.values():
                     spine.set_linewidth(0.6)
                     spine.set_edgecolor("0.25")
-                if row_idx == 0:
-                    title = f"{horizon_name}\n{product_label}"
-                    if product_idx == 0:
-                        title = f"{title}\n{agreement:.0f}% agreement"
-                    ax.set_title(title, fontsize=9, pad=4)
-                elif product_idx == 0:
-                    ax.set_title(f"{agreement:.0f}% agreement", fontsize=8, pad=3)
                 row_axes.append(ax)
+                pair_axes.append(ax)
+            pair_annotations.append((pair_axes[0], pair_axes[1], agreement))
         axes.append(row_axes)
 
         y0 = axes[row_idx][0].get_position().y0
@@ -633,6 +654,37 @@ def _plot_horizon_case_comparison(
             fontweight="bold",
         )
 
+    for horizon_idx, horizon_name in enumerate(HORIZONS):
+        for product_idx, label in enumerate([product_label, "USDM"]):
+            ax = axes[0][horizon_idx * 2 + product_idx]
+            pos = ax.get_position()
+            fig.text(
+                (pos.x0 + pos.x1) / 2.0,
+                0.902,
+                f"{horizon_name}\n{label}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                fontweight="bold",
+                linespacing=1.15,
+            )
+
+    for left_ax, right_ax, agreement in pair_annotations:
+        left_pos = left_ax.get_position()
+        right_pos = right_ax.get_position()
+        x = (left_pos.x0 + right_pos.x1) / 2.0
+        y = left_pos.y0 - 0.010
+        label = "Agreement: n/a" if not np.isfinite(agreement) else f"Agreement: {agreement:.1f}%"
+        fig.text(
+            x,
+            y,
+            label,
+            ha="center",
+            va="top",
+            fontsize=7.5,
+            color="0.12",
+        )
+
     cax = fig.add_axes([0.945, 0.24, 0.018, 0.50])
     cb = fig.colorbar(
         plt.cm.ScalarMappable(cmap=USDM_CMAP, norm=USDM_NORM),
@@ -644,13 +696,7 @@ def _plot_horizon_case_comparison(
     cb.ax.tick_params(labelsize=9)
     cb.set_label("Drought category", fontsize=11, fontweight="normal", labelpad=10)
 
-    fig.suptitle(
-        "USDM and proposed joint ET-SM drought index across prediction horizons",
-        y=0.955,
-        fontsize=14,
-        fontweight="bold",
-    )
-    out = output_dir / "combined_usdm_drought_index_horizons_conditions.png"
+    out = output_dir / output_name
     fig.savefig(out)
     plt.close(fig)
     return out
@@ -683,13 +729,26 @@ def main() -> None:
     usdm_cat = _rasterize_usdm_to_grid(geojson_path, data["lat"], data["lon"])
 
     pdf_path = _plot_joint_pdf(data, str(target_date), output_dir)
-    comparison_path = _plot_comparison(
+    _, copula_cat = _copula_category_from_zscores(data["z_et"], data["z_sm"])
+    copula_comparison_path = _plot_comparison(
         lat=data["lat"],
         lon=data["lon"],
-        app_cat=data["category"],
+        product_cat=copula_cat,
+        product_label="Clayton copula",
         usdm_cat=usdm_cat,
         target_date=str(target_date),
         output_dir=output_dir,
+        output_name=f"copula_usdm_comparison_{target_date}.png",
+    )
+    kendall_comparison_path = _plot_comparison(
+        lat=data["lat"],
+        lon=data["lon"],
+        product_cat=data["category"],
+        product_label="MSDI-Kendall ET-SM",
+        usdm_cat=usdm_cat,
+        target_date=str(target_date),
+        output_dir=output_dir,
+        output_name=f"msdi_kendall_usdm_comparison_{target_date}.png",
     )
 
     period_z_et, period_z_sm = _load_period_standardized_anomalies(
@@ -721,17 +780,31 @@ def main() -> None:
         geojson = _download_usdm_geojson(date_key, output_dir)
         sample = horizon_cases[("Weekly", target)]
         usdm_by_date[target] = _rasterize_usdm_to_grid(geojson, sample["lat"], sample["lon"])
-    combined_path = _plot_horizon_case_comparison(
+    copula_horizons_path = _plot_horizon_case_comparison(
         cases=horizon_cases,
         usdm_by_date=usdm_by_date,
         case_labels=DEFAULT_CASE_DATES,
         output_dir=output_dir,
+        product_label="Copula-based index",
+        output_name="fig7_usdm_vs_copula_drought_index_all_horizons_conditions_percent_agreement.png",
+        category_method="copula",
+    )
+    kendall_horizons_path = _plot_horizon_case_comparison(
+        cases=horizon_cases,
+        usdm_by_date=usdm_by_date,
+        case_labels=DEFAULT_CASE_DATES,
+        output_dir=output_dir,
+        product_label="MSDI-Kendall index",
+        output_name="fig8_usdm_vs_msdi_kendall_drought_index_all_horizons_conditions_percent_agreement.png",
+        category_method="msdi_kendall",
     )
 
     print(f"Joint PDF: {pdf_path}")
     print(f"Joint PDF 2015-2019: {period_pdf_path}")
-    print(f"Comparison: {comparison_path}")
-    print(f"Combined horizon/condition comparison: {combined_path}")
+    print(f"Copula comparison: {copula_comparison_path}")
+    print(f"MSDI-Kendall comparison: {kendall_comparison_path}")
+    print(f"Fig. 7 Copula horizon/condition comparison: {copula_horizons_path}")
+    print(f"Fig. 8 MSDI-Kendall horizon/condition comparison: {kendall_horizons_path}")
     print(f"USDM GeoJSON: {geojson_path}")
     print(f"USDM CONUS statistics CSV: {stats_path}")
 

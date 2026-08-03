@@ -1,16 +1,87 @@
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
-
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
 .ipynb_checkpoints/
+
+# Local agent/editor state
 .codex/
+.agents/
 
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.local.example
 .streamlit/secrets.toml
+.netrc
+.urs_cookies
+.earthaccess/
+earthaccess/
+credentials/
+*.pem
+*.key
 
+# Backend local runtime
+.droughtappctl/
+backend/.venv/
+backend/venv/
+backend/env/
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.cache/
+
+# Frontend dependencies and builds
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
+frontend/build/
+frontend/.turbo/
+frontend/.vercel/
+frontend/coverage/
+frontend/.playwright-browsers/
+frontend/test-results/
+frontend/playwright-report/
+frontend/.env.local
+frontend/.env*.local
+
+# Logs and scheduler output
+*.log
+*.out
+*.err
+
+# Model artifacts, data products, and local caches
+model_artifacts/
+backend/app/model_artifacts/
+backend/app/adapt/model_artifacts/
 droughtapp_cache/
 NLDAS_Cache/
-*.log
+backend/droughtapp_cache/
+backend/NLDAS_Cache/
+data/
+backend/data/
+yearly/
+backend/yearly/
+backend/app/yearly/
+*.keras
+*.h5
+*.hdf5
+*.npz
+*.npy
+*.nc
+*.nc4
+*.grib
+*.grb
+*.tif
+*.tiff
 
+# Raw ELM files
 ELM_EVAPOTRANSPIRATION_2000_2019.nc
 ELM_SM_2000-2019.nc
-yearly/

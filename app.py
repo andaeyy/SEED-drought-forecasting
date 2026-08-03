@@ -10,7 +10,7 @@ from config import (
     ELM_SM_PATH,
     MODEL_GRID_PATH,
     NLDAS_CACHE_DIR,
-    DEFAULT_HISTORY_DAYS,
+    PROCESSED_DAILY_CACHE_DIR,
     DEFAULT_COPULA_TAU,
     GPU_CONFIG_SOURCE,
     GPU_DEVICE_ID,
@@ -105,9 +105,9 @@ def _render_drought_legend_table() -> None:
             <tr>
               <td style="padding:4px 6px;">None / Normal</td>
               <td style="padding:4px 6px;">&ndash;</td>
-              <td style="padding:4px 6px;">(often shown as no fill or transparent)</td>
+              <td style="padding:4px 6px;">White</td>
               <td style="padding:4px 6px;">
-                <code>N/A</code>
+                <code>#FFFFFF</code>
               </td>
             </tr>
             <tr>
@@ -161,7 +161,7 @@ with st.sidebar:
     st.caption(f"GPU: `{GPU_DEVICE_ID}` ({GPU_CONFIG_SOURCE})")
 
     timescale = st.selectbox("Timescale", list(TIMESCALES.keys()), index=0)
-    drought_sensitivity = 2.0
+    drought_sensitivity = 1.0
 
     fallback_day = (np.datetime64("today", "D") - np.timedelta64(3, "D")).astype("datetime64[D]")
     default_as_of = fallback_day
@@ -182,7 +182,9 @@ if run_btn:
         "sm_path": ELM_SM_PATH,
         "model_grid_path": MODEL_GRID_PATH,
         "cache_dir": NLDAS_CACHE_DIR,
+        "processed_cache_dir": PROCESSED_DAILY_CACHE_DIR,
         "horizon_days": spec.horizon_days,
+        "default_history_days": spec.default_history_days,
     }
 
     with st.spinner("Fetching NLDAS forcings, running model inference, and calculating drought indices"):
@@ -190,7 +192,6 @@ if run_btn:
             bundle=bundle,
             timescale=timescale,
             as_of_day=as_of_day,
-            history_days=DEFAULT_HISTORY_DAYS,
             tau=DEFAULT_COPULA_TAU,
             drought_sensitivity=drought_sensitivity,
         )
@@ -201,7 +202,7 @@ res = st.session_state.get("forecast_result")
 if res is not None:
     st.success(f"Done. Target day = {str(res.target_day)} (horizon = {res.horizon_days} days).")
 
-    # ER95 proxy from standardized forecast anomalies.
+    # approximates ER95 from standardized forecast anomalies
     er95_sm = float(np.mean(np.abs(np.asarray(res.z_sm, dtype=np.float32)) > 1.96))
     er95_et = float(np.mean(np.abs(np.asarray(res.z_et, dtype=np.float32)) > 1.96))
     er95_overall = max(er95_sm, er95_et)

@@ -35,7 +35,6 @@ def _norm_lon_180(lon) -> np.ndarray:
 
 
 def load_precomputed_model_grid(path: str) -> Tuple[np.ndarray, np.ndarray]:
-    """Load the cropped NLDAS grid bundled with the Streamlit app."""
     arr = np.load(path)
     try:
         lat2d = arr["lat2d"].astype(np.float32)
@@ -49,7 +48,6 @@ def load_precomputed_model_grid(path: str) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _xr_open_dataset_safe(path: str, **kwargs) -> xr.Dataset:
-    """Open NetCDF with fallback engines."""
     last_err = None
     for eng in ("h5netcdf", "netcdf4", "scipy"):
         try:
@@ -60,7 +58,6 @@ def _xr_open_dataset_safe(path: str, **kwargs) -> xr.Dataset:
 
 
 def _find_sample_forcing_file(forcing_dir: str, years: list[int]) -> str:
-    """Pick a forcing file for grid and crop inference."""
     for y in years:
         p = os.path.join(forcing_dir, f"clmforc.nldas.{int(y)}.nc")
         if os.path.exists(p):
@@ -140,7 +137,6 @@ def get_model_grid_from_local_forcing(
     pad_cells: int = 1,
     model_grid_path: Optional[str] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Reconstruct the cropped NLDAS grid used during model training."""
     grid_path = model_grid_path or os.environ.get("MODEL_GRID_PATH") or DEFAULT_MODEL_GRID_PATH
     if grid_path and os.path.exists(grid_path):
         return load_precomputed_model_grid(grid_path)
@@ -185,7 +181,6 @@ def load_local_daily_forcing(
     et_path: str,
     sm_path: str,
 ) -> LocalDailyData:
-    """Load local forcing data on the model grid."""
     forcing_dir = os.path.abspath(forcing_dir)
 
     sample_file = _find_sample_forcing_file(forcing_dir, years)
