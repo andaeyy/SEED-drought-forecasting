@@ -26,10 +26,22 @@ python scripts/install_selected_models.py
 ## Requirements
 
 - Python 3.10 or newer
+- Git LFS 3 or newer
 - A CUDA-capable GPU with a TensorFlow-compatible CUDA/cuDNN runtime
 - Node.js 20 or newer
 - A free NASA Earthdata account: <https://urs.earthdata.nasa.gov/users/new>
 - Local access to required model artifacts and any raw NetCDF fallback data
+
+After cloning, materialize the versioned model bundles:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+The default `selected_2019_v20260731` deployment and the legacy compatibility
+checkpoints are stored in Git LFS. The loader verifies every active checkpoint
+and normalizer against its manifest SHA-256 before inference.
 
 ## Backend Setup
 
@@ -130,17 +142,19 @@ This stores credentials outside the repository for reuse by later downloads. Do 
 
 ## Artifact And Data Policy
 
-Do not commit model artifacts, NetCDF data, cache files, local `.env` files, or credentials.
+Model artifacts under `model_artifacts/` are versioned with Git LFS. Do not
+commit model checkpoints anywhere else. Do not commit NetCDF data, cache files,
+local `.env` files, or credentials.
 
 The ignore rules exclude common local outputs including:
 
-- Keras model files such as `*.keras`, `*.h5`, and `*.hdf5`
-- NumPy artifacts such as `*.npz` and `*.npy`
+- Keras and NumPy artifacts outside the versioned `model_artifacts/` tree
 - NetCDF and geospatial data such as `*.nc`, `*.nc4`, `*.grib`, and `*.tif`
-- `model_artifacts/`, `yearly/`, `droughtapp_cache/`, and `NLDAS_Cache/`
+- `yearly/`, `droughtapp_cache/`, and `NLDAS_Cache/`
 - backend virtualenv/cache directories and frontend dependency/build directories
 
-If a deployment needs large model or data files, distribute them through approved artifact storage rather than Git.
+Use Git LFS for additional deployment checkpoints. Keep raw training and
+evaluation datasets in approved external storage rather than Git.
 
 ## Legacy Streamlit Run
 
