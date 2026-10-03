@@ -23,6 +23,18 @@ python scripts/install_selected_models.py --dry-run
 python scripts/install_selected_models.py
 ```
 
+## Evaluation and Systems Contribution
+
+SEED combines target-specific spatiotemporal model selection with a versioned GPU inference service and an interactive geospatial client.
+
+- **Chronological evaluation:** candidate checkpoints are selected using only 2019 validation; the selected choices are frozen before independent 2020 evaluation. The test period is not used to select architectures. ET and SM are selected separately at each of the 7-, 30-, and 90-day leads, producing the six ConvLSTM selections in [Active Model Deployment](#active-model-deployment).
+- **Reproducibility contracts:** versioned bundles bind each target and horizon to a model ID, checkpoint, normalizer, ordered seven-channel input, fixed 10/45/135-day input window, and single lead-day endpoint output. The [installer](scripts/install_selected_models.py) checks the locked selection and source hashes and refuses to overwrite conflicting artifacts; the loader verifies checkpoint and normalizer SHA-256 hashes before inference.
+- **Backend/frontend design:** FastAPI owns NASA NLDAS retrieval, preprocessing, TensorFlow GPU inference, and ET/SM-derived drought maps. Next.js provides forecast controls, map-layer inspection, and GeoJSON export. ET, SM, and drought layers share the same selected model pair for a forecast; Slurm provisions the GPU backend separately from the browser client.
+- **Deterministic artifact validation:** [contract tests](backend/tests/test_selected_model_contract.py) check all six model identities, manifest schemas, artifact hashes, channel order, input windows, lead days, endpoint semantics, and API metadata. A separate [GPU parity gate](backend/validate_selected_models_gpu.py) compares deployed predictions with locked 2020 archives on three fixed dates, checks missing-value normalization and temporal alignment, and enforces a maximum absolute prediction difference of `5e-5` in physical units. This is an implementation-parity tolerance, not a forecast-accuracy result or a claim of bitwise deterministic GPU execution.
+- **Latency methodology:** [benchmark_app_latency.sbatch](benchmark_app_latency.sbatch) requests one GPU and invokes model timing with 20 warm-up steps, 300 timed steps, batch size 2, ensemble size 10, and separate ET/SM JSON outputs for each horizon. It currently targets legacy Weekly/Monthly/Seasonal checkpoints and requires an external `Emulator models/inference_latency.py` script; it does not establish latency for `selected_2019_v20260731` or end-to-end API/browser latency.
+
+**Results status:** no quantitative RMSE, MAE, baseline comparison, latency, or speedup is reported here without verified result contents. Legacy latency JSON files are tracked through Git LFS, but their pointer files alone do not expose measurements. Accuracy and current-deployment performance claims require accessible evaluation outputs identifying the model version, data split, metric units, and benchmark hardware/runtime.
+
 ## Requirements
 
 - Python 3.10 or newer
