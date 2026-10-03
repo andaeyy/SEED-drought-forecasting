@@ -33,7 +33,15 @@ SEED combines target-specific spatiotemporal model selection with a versioned GP
 - **Deterministic artifact validation:** [contract tests](backend/tests/test_selected_model_contract.py) check all six model identities, manifest schemas, artifact hashes, channel order, input windows, lead days, endpoint semantics, and API metadata. A separate [GPU parity gate](backend/validate_selected_models_gpu.py) compares deployed predictions with locked 2020 archives on three fixed dates, checks missing-value normalization and temporal alignment, and enforces a maximum absolute prediction difference of `5e-5` in physical units. This is an implementation-parity tolerance, not a forecast-accuracy result or a claim of bitwise deterministic GPU execution.
 - **Latency methodology:** [benchmark_app_latency.sbatch](benchmark_app_latency.sbatch) requests one GPU and invokes model timing with 20 warm-up steps, 300 timed steps, batch size 2, ensemble size 10, and separate ET/SM JSON outputs for each horizon. It currently targets legacy Weekly/Monthly/Seasonal checkpoints and requires an external `Emulator models/inference_latency.py` script; it does not establish latency for `selected_2019_v20260731` or end-to-end API/browser latency.
 
-**Results status:** no quantitative RMSE, MAE, baseline comparison, latency, or speedup is reported here without verified result contents. Legacy latency JSON files are tracked through Git LFS, but their pointer files alone do not expose measurements. Accuracy and current-deployment performance claims require accessible evaluation outputs identifying the model version, data split, metric units, and benchmark hardware/runtime.
+**Verified legacy timing:** the committed Git LFS reports record the following `mean_ms` values under TensorFlow 2.18.1 and the protocol above:
+
+| Lead | ET mean (ms) | SM mean (ms) | Reports |
+|---|---:|---:|---|
+| 7 days | 165.21 | 175.45 | [ET](model_artifacts/Weekly/Seq2seqconvlstm/latency/latency_et.json), [SM](model_artifacts/Weekly/Seq2seqconvlstm/latency/latency_sm.json) |
+| 30 days | 719.17 | 758.41 | [ET](model_artifacts/Monthly/DEconvlstm/latency/latency_et.json), [SM](model_artifacts/Monthly/DEconvlstm/latency/latency_sm.json) |
+| 90 days | 2029.65 | 2192.97 | [ET](model_artifacts/Seasonal/DEconvlstm/latency/latency_et.json), [SM](model_artifacts/Seasonal/DEconvlstm/latency/latency_sm.json) |
+
+These are recorded model-timing values for batch size 2, not per-request browser latency. The reports identify one visible GPU but not its hardware model; legacy ET inputs have eight channels, unlike the current seven-channel deployment. The external timing implementation is needed to interpret ensemble handling and GPU synchronization. No current-deployment latency, RMSE, MAE, baseline comparison, or speedup is claimed here without verified evaluation outputs.
 
 ## Requirements
 
